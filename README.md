@@ -5,5 +5,5 @@ MSc Student in Data Analytics with a focus on econometric modeling and financial
 - Psychology in Oncology: Mapping the Mind-Tumor Relationship (_Course_: Health Data Science);
 - Credit Fraud Detection (_Course_: Data Analytics and Artificial Intelligence);
 - Critical analysis of the paper 'An expert system for detecting automobile insurance fraud using social network analysis' (_Course_: Network Analysis);
-- Materials related to the tutorship of Computational Tools for Economics and Finance,
+- Materials related to the tutoring sessions I'm realizing for the Course of Computational Tools for Economics and Finance,
 - ...
