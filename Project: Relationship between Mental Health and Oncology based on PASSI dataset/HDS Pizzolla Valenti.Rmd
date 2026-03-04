@@ -1,0 +1,1457 @@
+---
+title: "[EM1413] - Health Data Science"
+author: "Alessia Pizzolla 891453 - Matteo Valenti 879393"
+date: "2025-07-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+```{r}
+
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+
+# set WD
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_knit$set(root.dir = getwd())
+
+```
+
+## Inspecting the relationship between psychological health and tumor
+
+## Problem Definition
+In this project, we aim to explore the potential association between psychological health 
+and the development of physical illnesses. In particular, we focused on cancer, 
+investigating whether certain patterns in mental health could be linked 
+to an increased risk of developing tumors.
+
+## Abstract
+
+This study investigates the complex relationship between psychological well-being and the onset of physical illnesses, with a particular focus on cancer. The primary aim is to explore whether specific patterns of mental health distress are associated with an increased risk of tumor development.
+
+To address this, we conducted an exploratory data analysis and employed contingency tables to identify preliminary associations between psychological and physical health indicators. Statistical models—including logistic regression, generalized linear mixed models (GLMM), Poisson and binomial regressions—were applied to quantify risk and control for potential confounding variables.
+
+Furthermore, we examined the reverse relationship, assessing how psychological health may be influenced by physical conditions and socio-demographic factors, using ordered regression models.
+
+The findings suggest a bidirectional link between mental and physical health, highlighting the importance of integrated approaches in both the prevention and treatment of oncological diseases.
+
+## Installing and loading of the necessary packages
+```{r, include = FALSE}
+
+required_packages <- c(
+  "tidyverse", "openintro", "dplyr", "kableExtra", "jtools", "readxl",
+  "skimr", "ggplot2", "quantreg", "ROSE", "caret", "glmnet", "car",
+  "AER", "MASS", "pROC", "VGAM", "parameters", "sjPlot"
+)
+
+# control for missing packages
+for (pkg in required_packages) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+  library(pkg, character.only = TRUE)
+}
+
+```
+
+In this section, we upload and prepare the 2023 PASSI dataset 
+(Progressi delle Aziende Sanitarie per la Salute in Italia).
+PASSI is a continuous public health surveillance system, inspired by 
+the Behavioural Risk Factor Surveillance model used in many countries.
+Since 2008, it has collected data on lifestyle and behavioural risk 
+factors linked to chronic non-communicable diseases in Italian adults 
+aged 18–69, as well as on awareness and participation in prevention programs.
+
+Coordinated by the Istituto Superiore di Sanità, PASSI is a key tool for 
+the Italian National Health System. It provides timely and ongoing data 
+at both the regional and local health unit (LHU) levels, supporting 
+the design and evaluation of preventive health policies in line with 
+national and regional prevention plans.
+
+I have loaded the cleaned Excel file, selecting only the specified columns 
+(`id`, `regione`, `sesso_intervistato`, `data_intervista`, `s01_salute_psic`, `s01_tumori`, 
+s02_attiv_30_gg_quanto`, `s03_fumo`, `s03_fumo_att`, `s04_consu_frutta`, `s05_alcool_gg`, 
+`s07_eta`, `s12_poco_inter_gg`, `s14_stato_civ`, `s14_tit_stud`, `s14_disp_econ`, 
+`s01_malattie_croniche`, `s01_insuff_renale`, `s01_bronchite`, `s01_asma_bronchiale`, 
+`s14_cittadin`, `s18_qualita_aria`, `s09_mammo_eseg`, `s10_so_eseg`, `s14_codifica_mansione`, 
+`imc4cat`, `s01_tum_anni_diagnosi`)
+
+
+```{r, include=FALSE}
+readxl::read_excel("PASSI_dataset_2023_cleaned.xlsx")
+```
+
+
+```{r, echo = FALSE}
+PASSI_2023 <- read_excel("PASSI_dataset_2023_cleaned.xlsx")
+```
+
+```{r}
+str(PASSI_2023)
+```
+
+We define a vector called 'factor_variable' that contains the names of the variables 
+in the dataset which will be treated as categorical (factors).
+These include demographic variables (e.g., region, gender), health conditions 
+(e.g., tumors, chronic diseases), behaviors (e.g., smoking, physical activity, diet),
+socioeconomic indicators (e.g., education, economic conditions), and preventive actions 
+(e.g., screening participation).
+
+```{r}
+factor_variable = c("regione", "sesso_intervistato", "s01_tumori", "s02_attiv_30_gg_quanto", "s03_fumo",
+                    "s03_fumo_att", "s04_consu_frutta", "s14_stato_civ" , "s14_tit_stud", "s14_disp_econ",
+                    "s01_malattie_croniche", "s01_insuff_renale", "s01_bronchite", "s01_asma_bronchiale",
+                    "s14_cittadin",  "s18_qualita_aria", "s09_mammo_eseg", "s10_so_eseg",
+                    "s14_codifica_mansione", "imc4cat")
+```
+
+## Pre - Processing
+
+```{r}
+# We create a new dataframe that we will manipulate, so that we will still have the original PASSI up there
+ps <- PASSI_2023
+
+# Changing the encoding of "" into NA
+ps[ps == ""] = NA
+
+# Assigned 0 to missing values in the 's14_codifica_mansione' column, 
+# interpreting NA as "unemployed"
+ps$s14_codifica_mansione[is.na(ps$s14_codifica_mansione)] <- 0
+
+# Identify columns that contain "t" or "f"
+cols_with_tf <- sapply(ps, function(col) any(col %in% c("t", "f"), na.rm = TRUE))
+
+# Replace "t" with "1" and "f" with "0" only in those columns
+ps[cols_with_tf] <- lapply(ps[cols_with_tf], function(col) {
+  col[col == "t"] <- "1"
+  col[col == "f"] <- "0"
+  return(col)
+})
+
+# Convert all variables listed in the 'factor_variable' vector to factors
+ps <- ps %>% mutate_at(.vars= vars(all_of(factor_variable)), as.factor)
+
+# Display the structure of the updated dataframe
+str(ps)
+
+# Encode the 'regione' column as a factor with numeric codes mapped to region names
+# Some numeric codes (e.g., 41 and 42) are grouped under the same label ("Trentino-Alto Adige")
+ps$regione = factor(ps$regione, 
+                    levels = c( 10,   20,  41,  42,  50,  60,  70,  80,  90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200 ),
+                    labels = c("Piemonte", "Valle d'Aosta", "Trentino-Alto Adige", "Trentino-Alto Adige", 'Veneto', 'Friuli Venezia Giulia',
+                               'Liguria', 'Emilia-Romagna', 'Toscana', 'Umbria', 'Marche', 'Lazio', 'Abruzzo', 'Molise', 'Campania', 'Puglia',
+                               'Basilicata', 'Calabria', 'Sicilia', 'Sardegna'))
+```
+
+```{r}
+# Recoded several variables as factors with descriptive labels:
+# - Demographics: sesso_intervistato, stato civile, cittadinanza, titolo di studio
+# - Health: fumo, frutta, attività fisica, patologie, tumori, BMI (imc4cat)
+# - Perceptions: qualità aria, difficoltà economiche
+# - Screenings: mammografia, sangue occulto
+# - Occupation: codifica mansione
+ps$sesso_intervistato <- factor(ps$sesso_intervistato, labels = c("F", "M"))
+ps$s03_fumo <- factor(ps$s03_fumo , labels = c("-99", "ha fumato", "non ha fumato"))
+ps$s04_consu_frutta <- factor(ps$s04_consu_frutta , labels = c("0", "1-2", "3-4", "5"))
+ps$s14_stato_civ = factor(ps$s14_stato_civ , labels = c("coniugato", "celibe/nubile", "vedovo", "separato/divorziato"))
+ps$s14_tit_stud = factor(ps$s14_tit_stud , labels = c("no titolo", "elementare", "media", "diploma", "laurea"))
+ps$s14_disp_econ = factor(ps$s14_disp_econ , labels = c("molto facilmente", "abbastanza facilmente", "qualche diff", "molte diff"))
+ps$s01_insuff_renale = factor(ps$s01_insuff_renale , labels = c("no", "sì"))
+ps$s01_asma_bronchiale = factor(ps$s01_asma_bronchiale , labels = c("no", "sì"))
+ps$s01_bronchite = factor(ps$s01_bronchite , labels = c("no", "sì"))
+ps$s01_malattie_croniche = factor(ps$s01_malattie_croniche , labels = c("no", "sì"))
+ps$s01_tumori = factor(ps$s01_tumori , labels = c("no", "sì"))
+ps$s02_attiv_30_gg_quanto = factor(ps$s02_attiv_30_gg_quanto , labels = c("-99", "buona", "suff", "non suff", "scarsa"))
+ps$s14_cittadin  = factor(ps$s14_cittadin , labels = c("ita", "straniera", "doppia"))
+ps$s18_qualita_aria = factor(ps$s18_qualita_aria , labels = c("-99", "molto buona", "abb buona", "cattiva", "molto cattiva"))
+ps$s09_mammo_eseg = factor(ps$s09_mammo_eseg , labels = c("-99", "sì", "no"))
+ps$s10_so_eseg = factor(ps$s10_so_eseg , labels = c("-99", "sì", "no"))
+ps$s14_codifica_mansione  = factor(ps$s14_codifica_mansione , labels = c("disoccupato", "imprenditore/leg/dir", "intell/scientifico", "tecnico", "esecutivo", "commerciale",
+                                                                         "operaio/agric", "cond impianti" , "non qualificate", "forze armate"))
+ps$imc4cat = factor(ps$imc4cat , labels = c("sottopeso", "normopeso", "sovrappeso", "obeso"))
+```
+
+```{r}
+# Renamed the variable 'imc4cat' to 'peso' for clarity and easier reference
+ps <- ps %>% rename(peso = imc4cat)
+
+# Display the structure and a quick overview of the dataframe 'ps'
+glimpse(ps)
+```
+
+```{r}
+# Assign -99 to 's03_fumo_att' for respondents labeled "non ha fumato" to indicate no smoking activity data
+ps$s03_fumo_att <- ifelse(ps$s03_fumo== "non ha fumato", -99, ps$s03_fumo_att)
+# Convert 's03_fumo_att' into a factor with labels: "-99" = no data, "non fuma" = does not smoke, "fuma" = smokes
+ps$s03_fumo_att <- factor(ps$s03_fumo_att, labels = c("-99", "non fuma" , "fuma"))
+# For respondents without tumors ('s01_tumori' == "no"), set 's01_tum_anni_diagnosi' to -99 (no diagnosis year)
+ps$s01_tum_anni_diagnosi <- ifelse(as.character(ps$s01_tumori) == "no", -99, ps$s01_tum_anni_diagnosi)
+# Display structure of dataset to check changes
+str(ps)
+```
+
+```{r}
+# We created a vector containing the names of columns to be excluded from further analysis or processing.
+exclude_cols <- c("s09_mammo_eseg", "s18_qualita_aria", "s10_so_eseg")
+
+# We use drop_na() on the following columns to remove incomplete rows
+cols_to_check <- setdiff(names(ps), exclude_cols)
+
+# Select all columns from 'ps' except the excluded ones, to apply drop_na only on them
+ps <- ps %>% drop_na(all_of(cols_to_check))
+```
+
+We filtered the dataset to remove rows with invalid or placeholder values:
+- For 's03_fumo' (smoking status), we kept only "ha fumato" (has smoked) and "non ha fumato" (has not smoked), 
+then removed unused factor levels.
+- For 's02_attiv_30_gg_quanto' (physical activity in the last 30 days), 
+we kept only the valid responses ("buona", "suff", "non suff", "scarsa") 
+and dropped unused factor levels.
+
+```{r}
+ps <- ps %>% filter(s03_fumo=="ha fumato" | s03_fumo=="non ha fumato")
+ps$s03_fumo <- droplevels(ps$s03_fumo)
+
+ps <- ps %>% filter(s02_attiv_30_gg_quanto=="buona" | s02_attiv_30_gg_quanto=="suff"| s02_attiv_30_gg_quanto=="non suff"| s02_attiv_30_gg_quanto=="scarsa")
+ps$s02_attiv_30_gg_quanto <- droplevels(ps$s02_attiv_30_gg_quanto)
+```
+
+```{r}
+# Count all the occurrences signaling the presence of an illness in a subject
+ps$count.1 <- apply(ps[c('s01_bronchite', 's01_malattie_croniche', 's01_insuff_renale', 's01_asma_bronchiale')], 1, function(x) length(which(x=="sì")))
+
+# Creation of a binary variable indicating whether a subject has at least an illness (1) or not (0)
+ps$chronic <- ifelse(ps$count.1 =="0", 0, 1)
+ps$chronic <- factor(ps$chronic , labels = c("no", "sì"))
+
+skimr::skim(ps)
+```
+
+We want to treat the variable 's01_salute_psic' (psychological health) as an ordinal categorical variable.
+```{r}
+# Here, we remove rows where the value is -99, which represents missing or invalid data.
+ps <- ps %>% filter(s01_salute_psic != -99)
+```
+
+We are creating a histogram showing the distribution of the number of days in the month 
+in which individuals reported feeling mentally unwell (variable: s01_salute_psic).
+The x-axis represents the number of days, and the y-axis shows the frequency of respondents for each value.
+
+```{r}
+ggplot(ps, aes(x = s01_salute_psic)) +
+  geom_histogram(bins = 30, fill = "skyblue", color = "black") +
+  labs(
+    title = "Distribuzione della Salute Psicologica (s01_salute_psic)",
+    x = "GG Salute Psicologica",
+    y = "Frequenza"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14),
+    axis.title = element_text(size = 12)
+  )
+```
+
+Since a large number of respondents reported 0 days of psychological distress (i.e., they never felt mentally unwell),
+and there is a spread across the other values, we decided to group the variable into four categories:
+0 = "bene", 1–9 = "abb bene", 10–19 = "male", 20–30 = "molto male".
+This choice was made to reflect the fact that many individuals report feeling very well.
+
+```{r}
+ps$s01_salute_psic1 <- cut(
+  ps$s01_salute_psic,
+  breaks = c(-1, 0, 9, 19, 30),
+  labels = c("bene", "abb bene", "male", "molto male"),
+  right = TRUE,
+  ordered_result = TRUE
+)
+
+str(ps)
+
+```
+
+## Exploratory analysis
+
+```{r}
+ggplot(ps, aes(x = s01_tumori, y = s07_eta)) +
+  geom_boxplot(fill = "lightblue", color = "darkblue") +
+  labs(
+    title = "Distribuzione dell'età per diagnosi di tumore",
+    x = "Diagnosi di Tumore",
+    y = "Età"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14),
+    axis.title = element_text(size = 12)
+  )
+```
+
+The boxplot indicates that individuals diagnosed with a tumor ("yes") tend to be older than those without a diagnosis ("no").
+The median age is higher in the "yes" group (~58 years) compared to the "no" group (~46 years).
+The age distribution is also more concentrated among diagnosed individuals, as shown by the smaller interquartile range.
+Several outliers are present in the "yes" group, representing younger patients who also received a tumor diagnosis.
+This suggests a general association between increasing age and the likelihood of tumor diagnosis, although younger cases do exist.
+
+```{r}
+ggplot(ps, aes(x = chronic, y = s07_eta)) +
+  geom_boxplot(fill = "pink", color = "darkred") +
+  labs(
+    title = "Distribuzione dell'età per diagnosi di malattie croniche",
+    x = "Diagnosi di malattie croniche",
+    y = "Età"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14),
+    axis.title = element_text(size = 12)
+  )
+```
+
+Same plot for overall chronic diseases:
+The boxplot illustrates the age distribution based on the diagnosis of chronic diseases.
+Individuals diagnosed with at least one chronic disease ("yes") tend to be older on average,
+with a median age slightly above that of those without a chronic disease diagnosis ("no").
+The interquartile range is similar between the two groups, although the distribution for the "yes" group is slightly more concentrated in higher age ranges.
+Both groups show a wide age range, indicating that chronic conditions can occur at various ages.
+However, the overall trend suggests a positive association between increasing age and the presence of chronic diseases.
+
+```{r}
+ggplot(ps[ps$s01_tumori == "sì", ], aes(x = peso, y = s07_eta)) +
+  geom_boxplot(fill = "lightgreen", color = "darkgreen") +
+  labs(
+    title = "Distribuzione dell'età per categoria di peso nei soggetti con tumore",
+    x = "Categoria di peso",
+    y = "Età"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14),
+    axis.title = element_text(size = 12)
+  )
+```
+
+The boxplot shows the age distribution across different weight categories 
+among individuals diagnosed with tumors. 
+On average, underweight individuals appear to be younger than those in the other categories, 
+while overweight and obese individuals tend to be older.
+The median age increases progressively from underweight to obese.
+There are several outliers, particularly among normal weight and overweight individuals, 
+with lower age values.
+This suggests a possible association between higher age and higher BMI 
+in tumor patients, but statistical testing would be required to confirm significance.
+
+```{r}
+ggplot(ps[ps$chronic == "sì", ], aes(x = peso, y = s07_eta)) +
+  geom_boxplot(fill = "lightgreen", color = "darkgreen") +
+  labs(
+    title = "Distribuzione dell'età per categoria di peso nei soggetti con malattie croniche",
+    x = "Categoria di peso",
+    y = "Età"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14),
+    axis.title = element_text(size = 12)
+  )
+```
+
+This boxplot illustrates the age distribution across weight categories 
+among individuals diagnosed with chronic disease.
+A clear upward trend in median age can be observed from underweight to obese categories.
+Underweight individuals show a wider age spread and a lower median age,
+while overweight and obese individuals tend to be older, with higher median and upper quartile values.
+Outliers are present only in the obese group, concentrated in the younger age range.
+This pattern may suggest a potential association between higher BMI and older age among individuals with chronic disease.
+Further analysis would be needed to assess the statistical significance of these differences.
+
+```{r}
+# Calculate the total number of respondents by age group
+totali_eta <- ps %>%
+  group_by(s07_eta) %>%
+  summarise(totale_rispondenti = n())
+
+# Calculate the number of respondents who answered "yes" to having tumors, by age group
+tumori_si <- ps %>%
+  filter(s01_tumori == "sì") %>%
+  group_by(s07_eta) %>%
+  summarise(totale_tumori = n())
+
+# Join the two datasets and calculate the percentage of tumor cases within each age group
+dati_norm_si <- left_join(tumori_si, totali_eta, by = "s07_eta") %>%
+  mutate(percentuale_tumori = totale_tumori / totale_rispondenti)
+```
+
+```{r}
+ggplot(dati_norm_si, aes(x = s07_eta, y = percentuale_tumori)) +
+  geom_point(color = "firebrick", size = 2) +
+  geom_smooth(method = "lm", se = FALSE, color = "blue", linetype = "dashed") +  # Lineare
+  geom_quantile(quantiles = 0.25, color = "darkgreen", size = 1) +               # 25°
+  geom_quantile(quantiles = 0.5, color = "orange", size = 1) +                   # Mediana
+  geom_quantile(quantiles = 0.75, color = "purple", size = 1) +                  # 75°
+  labs(
+    title = "Percentuale di Tumori Sì per Età (normalizzata)",
+    x = "Età",
+    y = "Proporzione Tumori Sì"
+  ) +
+  theme_minimal()
+```
+
+This scatter plot shows the proportion of respondents who answered "yes" to having a tumor,
+plotted against their age group. Each red dot represents the observed proportion in a given age.
+The following trend lines are included:
+- Blue dashed line: linear regression line, showing a clear positive correlation between age and tumor prevalence.
+- Green line: 25th percentile quantile regression, indicating the lower bound trend.
+- Orange line: 50th percentile (median) quantile regression, showing the central tendency.
+- Purple line: 75th percentile quantile regression, highlighting the upper bound trend.
+These quantile regressions help reveal variability across the distribution,
+especially at older ages, where the spread increases. Overall, the chart suggests
+a growing proportion of tumor-positive respondents with increasing age.
+
+```{r}
+# Calculate the number of respondents who answered "no" to having tumors, grouped by age
+tumori_no <- ps %>%
+  filter(s01_tumori == "no") %>%
+  group_by(s07_eta) %>%
+  summarise(totale_non_tumori = n())
+
+# Join with the total respondents by age and compute the proportion of "no" tumor responses
+dati_norm_no <- left_join(tumori_no, totali_eta, by = "s07_eta") %>%
+  mutate(percentuale_non_tumori = totale_non_tumori / totale_rispondenti)
+```
+
+```{r}
+ggplot(dati_norm_no, aes(x = s07_eta, y = percentuale_non_tumori)) +
+  geom_point(color = "steelblue", size = 2) +
+  geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dashed") +
+  geom_quantile(quantiles = 0.25, color = "darkgreen", size = 1) +
+  geom_quantile(quantiles = 0.5, color = "orange", size = 1) +
+  geom_quantile(quantiles = 0.75, color = "purple", size = 1) +
+  labs(
+    title = "Percentuale di Tumori No per Età (normalizzata)",
+    x = "Età",
+    y = "Proporzione Tumori No"
+  ) +
+  theme_minimal()
+```
+
+This normalized scatter plot shows the proportion of respondents who answered "no" to having a tumor,
+plotted against their age group. Each blue dot represents the observed proportion for a specific age.
+The plot includes the following trend lines:
+- Black dashed line: linear regression line, showing a slight negative trend in the proportion of "no" responses with age.
+- Green line: 25th percentile quantile regression, reflecting the lower bound trend.
+- Orange line: 50th percentile (median) quantile regression, indicating the central trend.
+- Purple line: 75th percentile quantile regression, representing the upper bound trend.
+Together, these lines help to visualize the distribution and variability in "no" tumor responses across ages.
+The chart suggests that younger respondents are more likely to report no history of tumors,
+while this proportion tends to decrease with age.
+
+```{r}
+# Calculate the total number of respondents by psychological health level
+totali_psic <- ps %>%
+  group_by(s01_salute_psic1) %>%
+  summarise(totale_rispondenti = n())
+
+# Calculate the number of respondents who answered "yes" to having tumors, grouped by perceived psychological health
+tumori_si_psic <- ps %>%
+  filter(s01_tumori == "sì") %>%
+  group_by(s01_salute_psic1) %>%
+  summarise(totale_tumori = n())
+
+# Calculate the number of respondents who answered "no" to having tumors, grouped by perceived psychological health
+tumori_no_psic <- ps %>%
+  filter(s01_tumori == "no") %>%
+  group_by(s01_salute_psic1) %>%
+  summarise(totale_non_tumori = n())
+
+# Join the "tumori sì" data with the total respondents per psychological health group,
+# and compute the proportion of tumor-positive respondents in each group
+dati_norm_si_psic <- left_join(tumori_si_psic, totali_psic, by = "s01_salute_psic1") %>%
+  mutate(percentuale_tumori = totale_tumori / totale_rispondenti)
+
+# Define labels for the psychological health categories (in order)
+fasce <- c("bene", "abbastanza bene", "male", "molto male")
+
+# Define the tumor percentages corresponding to each category (used for custom plotting)
+percentuali <- c(3.19, 6.08, 8.24, 9.59)
+```
+
+```{r}
+# Create a basic bar plot of the tumor percentages by psychological health category
+barplot(dati_norm_si_psic$percentuale_tumori,
+        names.arg = dati_norm_si_psic$s01_salute_psic1,
+        col = "skyblue",
+        main = "Percentuale di tumori per fascia di salute psicologica",
+        xlab = "Fascia di salute psicologica",
+        ylab = "Percentuale di tumori (%)",
+        ylim = c(0, 0.2))
+```
+
+The chart shows an increasing trend: worse psychological health is associated with higher tumor percentage.
+"Very poor" mental health has the highest tumor rate; "good" has the lowest.
+Suggests a possible positive association
+
+```{r}
+# Density plot (with psychological health as numeric)
+ggplot(ps, aes(x = s01_salute_psic, fill = s01_tumori)) +
+  geom_density(alpha = 0.5) +
+  coord_cartesian(xlim = c(0, 10)) +
+  labs(title = "Distribuzione della salute psicologica per presenza di tumore",
+       x = "Salute psicologica",
+       y = "Densità") +
+  theme_minimal() +
+  scale_fill_manual(values = c("sì" = "red", "no" = "blue"))
+```
+
+The plot shows that individuals without tumors (blue) tend to report better psychological health,
+with a strong peak near zero (high well-being). Those with tumors (red) have a flatter distribution,
+with relatively higher density in lower psychological health scores. 
+This suggests that poor mental health may be more common among individuals with tumors.
+
+```{r}
+# Calculate percentage of tumors by region
+tumori_per_regione <- ps %>%
+  group_by(regione) %>%
+  summarise(
+    totale = n(),
+    tumori_sì = sum(s01_tumori == "sì"),
+    percentuale_tumori = tumori_sì / totale * 100
+  ) %>%
+  arrange(desc(percentuale_tumori))  # Sort by tumor percentage
+
+# Bar plot
+ggplot(tumori_per_regione, aes(x = reorder(regione, percentuale_tumori), y = percentuale_tumori)) +
+  geom_col(fill = "tomato") +
+  coord_flip() +
+  labs(
+    title = "Percentuale di Tumori per Regione",
+    x = "Regione",
+    y = "% Tumori"
+  ) +
+  theme_minimal()
+
+# Calculate average psychological health score by region
+salute_psic_media <- ps %>%
+  group_by(regione) %>%
+  summarise(
+    media_salute_psic = mean(s01_salute_psic, na.rm = TRUE)
+  ) %>%
+  arrange(desc(media_salute_psic))  # Sort by average
+
+# Bar plot
+ggplot(salute_psic_media, aes(x = reorder(regione, media_salute_psic), y = media_salute_psic)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Media Giorni di Disagio Psicologico per Regione",
+    x = "Regione",
+    y = "Media Giorni"
+  ) +
+  theme_minimal()
+
+# Shows how perceived economic availability relates to psychological health
+ggplot(ps, aes(x = s14_disp_econ, fill = s01_salute_psic1)) +
+  geom_bar(position = "fill") +
+  labs(title = "Salute psicologica per disponibilità economica", x = "Disponibilità economica", y = "Proporzione") +
+  theme_minimal()
+
+# Displays the proportion of tumor cases across psychological health categories
+ggplot(ps, aes(x = s01_salute_psic1, fill = s01_tumori)) +
+  geom_bar(position = "fill") +
+  labs(title = "Incidenza di tumori per salute psicologica", x = "Salute psicologica", y = "Proporzione") +
+  theme_minimal()
+
+# Compares economic availability among different job roles
+ggplot(ps, aes(x = s14_codifica_mansione, fill = s14_disp_econ)) +
+  geom_bar(position = "fill") +
+  labs(title = "Tipo di mansione e disponibilità economica", x = "Mansione", y = "Proporzione") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Shows distribution of chronic disease presence across weight categories
+ggplot(ps, aes(x = peso, fill = chronic)) +
+  geom_bar(position = "fill") +
+  labs(title = "Presenza di malattie croniche per categoria di peso", x = "Peso", y = "Proporzione") +
+  theme_minimal()
+
+# Illustrates the connection between physical activity frequency and psychological health
+ggplot(ps, aes(x = s02_attiv_30_gg_quanto, fill = s01_salute_psic1)) +
+  geom_bar(position = "fill") +
+  labs(title = "Attività fisica e salute psicologica", x = "Frequenza attività fisica (ultimi 30 giorni)", y = "Proporzione") +
+  theme_minimal()
+```
+
+## Contingency tables
+
+```{r}
+# Contingency tables
+
+library(knitr)
+library(kableExtra)
+
+# 1. Merge tumor and non-tumor data by psychological health category
+tumori_psic <- full_join(
+  tumori_si_psic,
+  tumori_no_psic,
+  by = "s01_salute_psic1"
+)
+# 2. Create contingency table with counts of tumors and non-tumors by category
+contingenza <- xtabs(
+  cbind(totale_tumori, totale_non_tumori) ~ s01_salute_psic1,
+  data = tumori_psic
+)
+# 3. Display contingency table with totals and styled formatting
+kable(addmargins(contingenza)) %>%
+  kable_material(c("striped", "hover")) %>%
+  kable_styling(full_width = FALSE)
+
+
+# Compute overall joint probabilities and display with row/column totals
+kable(addmargins(prop.table(contingenza))) %>%
+  kable_material(c("striped", "hover")) %>%
+  kable_styling(full_width = FALSE)
+
+# Compute row-wise conditional probabilities (given psychological health band)
+prob_condizionata <- prop.table(contingenza, margin = 1)
+
+# Display conditional probability table without row/column totals
+kable(prob_condizionata) %>%
+  kable_material(c("striped", "hover")) %>%
+  kable_styling(full_width = FALSE)
+```
+
+This table shows the distribution of tumor and non-tumor cases 
+across different levels of psychological health:
+As psychological health worsens, the proportion of individuals with tumors increases:
+- "bene":        3.19% with tumors,       96.81% without tumors
+- "abb bene":    6.08% with tumors,       93.92% without tumors
+- "male":        8.24% with tumors,       91.76% without tumors
+- "molto male":  9.59% with tumors,       90.41% without tumors
+This suggests a negative correlation between psychological well-being and tumor prevalence.
+Poorer psychological health appears to be associated with a higher incidence of tumors.
+
+```{r}
+riskratio_abb <- prob_condizionata[1,1]/prob_condizionata[2,1]
+(riskratio_abb-1)*100
+# -47.57907: individuals with "abb bene" mental health have a 47.6% higher risk of tumors than those with "bene"
+
+riskratio_male <- prob_condizionata[1,1]/prob_condizionata[3,1]
+(riskratio_male-1)*100
+# -61.29786: individuals with "male" mental health have a 61.3% higher risk of tumors than those with "bene"
+
+riskratio_mm <- prob_condizionata[1,1]/prob_condizionata[4,1]
+(riskratio_mm-1)*100
+# -66.77003: individuals with "molto male" mental health have a 66.8% higher risk of tumors than those with "bene"
+```
+
+Risk Ratio analysis using "bene" (good psychological health) as the reference level
+- prob_condizionata is a table of conditional probabilities where:
+Rows represent psychological health levels: 
+  1 = "bene" (good), 
+  2 = "abb bene" (fairly good), 
+  3 = "male" (bad), 
+  4 = "molto male" (very bad)
+Column 1 contains the probability of having a tumor (totale_tumori)
+
+Overall interpretation:
+There is a clear negative association between psychological health and tumor prevalence.
+As psychological health worsens, the relative risk of having a tumor increases significantly.
+
+
+```{r}
+# ODDS RATIO 
+# Odds Ratio (OR) analysis for having a tumor based on psychological health status
+# Calculate odds for tumor in "bene"
+OR_bene= prob_condizionata[1,1]/(1-prob_condizionata[1,1]) #0.03292928
+OR_bene
+```
+
+OR_bene = 0.03292928
+This is the odds of having a tumor for individuals with "bene" (good psychological health).
+It means that for every 1 person with a tumor, there are approximately 30.4 people without a tumor
+in the "bene" group (since 1 / 0.0329 ≈ 30.4).
+In other words, the odds of having a tumor in this group are very low — around 3.3%.
+
+```{r}
+# Calculate odds for tumor in "abb bene"
+OR_abb_bene= prob_condizionata[2,1]/(1-prob_condizionata[2,1]) #0.06475236
+OR_abb_bene
+
+# Calculate odds for tumor in "male"
+OR_male= prob_condizionata[3,1]/(1-prob_condizionata[3,1]) #0.08976558
+OR_male
+
+# Calculate odds for tumor in "molto male"
+OR_mm= prob_condizionata[4,1]/(1-prob_condizionata[4,1]) #0.1061164
+OR_mm
+
+# Calculate ODDS RATIO: "molto male" vs "bene"
+OR= OR_mm/OR_bene #3.222555
+OR
+```
+```{r}
+(OR - 1) * 100
+# 222.26%
+```
+Interpretation:
+The odds of having a tumor for individuals with "molto male" psychological health
+are approximately 3.22 times higher than for those with "bene" psychological health.
+This means their odds are 222.26% higher than the reference group
+The odds for people in bad psychological health (mm) subjects of being Ill (tumor)
+are 222.26%% higher than for people with "bene".
+
+
+```{r}
+#Count, Create the contingency table
+
+# Now we transpose it so that:
+# - Rows represent tumor status (yes/no)
+# - Columns represent psychological health levels ("bene", "abb bene", "male", "molto male")
+contingenza_2 <- t(contingenza)
+
+# Display the transposed contingency table with row and column totals
+kable(addmargins(contingenza_2)) %>%
+  kable_material(c("striped", "hover")) %>%
+  kable_styling(full_width = FALSE)
+
+# Probabilities
+# Compute overall proportions (each cell divided by the grand total)
+# This gives the joint probability distribution (not conditional)
+kable(addmargins(prop.table(contingenza_2))) %>%
+  kable_material(c("striped", "hover")) %>%
+  kable_styling(full_width = FALSE)
+
+# Compute row-wise conditional probabilities
+# Now each row (tumor = yes / no) sums to 1
+# This tells us, for each tumor status, how psychological health is distributed
+prob_condizionata_2 <- prop.table(contingenza_2, margin = 1)
+
+# Display the conditional probability table (without row/column totals)
+kable(prob_condizionata_2) %>%
+  kable_material(c("striped", "hover")) %>%
+  kable_styling(full_width = FALSE)
+```
+
+The values indicate the proportion of people with a specific psychological state
+among those with tumors and among those without tumors.
+Example interpretations:
+ - 51.3% of the people with tumors report feeling "bene"
+ - 25.7% of the people with tumors report feeling "abbastanza bene"
+ - 12.0% of tumor cases fall under the "male" category
+ - 11.0% of tumor cases are in the "molto male" category
+
+Interpretation:
+ - The percentage of people reporting "bene" is higher in the non-tumor group (71.1%) 
+   compared to the tumor group (51.3%), suggesting better psychological health is more common
+   among those without tumors.
+ - Conversely, worse psychological states ("male" and "molto male") are more represented
+   among those with tumors than those without.
+These differences may suggest an association between psychological health and tumor status
+
+```{r}
+# Reverse Risk Ratio: here we compare, for each psychological state, 
+# the probability of being in the "tumor" group versus the "non-tumor" group.
+# The reference group is "totale_tumori" (i.e., people with tumors)
+# Risk Ratio for "bene"
+riskratio_2_bene <- prob_condizionata_2[1,1]/prob_condizionata_2[2,1]
+(riskratio_2_bene-1)*100
+# -27.82%
+# People who feel "bene" are 27.8% less likely to be in the tumor group 
+# compared to those in the non-tumor group with the same psychological state.
+# This suggests a protective association between feeling psychologically well and tumor presence.
+
+riskratio_2_abb <- prob_condizionata_2[1,2]/prob_condizionata_2[2,2]
+(riskratio_2_abb-1)*100
+# +41.94%
+# Individuals reporting "abbastanza bene" are 41.9% more likely to be in the tumor group 
+# than in the non-tumor group with the same psychological status.
+# This marks the beginning of a trend: as psychological well-being decreases, risk increases.
+
+riskratio_2_male <- prob_condizionata_2[1,3]/prob_condizionata_2[2,3]
+(riskratio_2_male-1)*100
+# +96.77%
+# Those feeling "male" are nearly twice as likely (+96.8%) to be in the tumor group 
+# than in the non-tumor group within the same psychological category
+
+riskratio_2_mm <- prob_condizionata_2[1,4]/prob_condizionata_2[2,4]
+(riskratio_2_mm-1)*100
+# +132.61%
+# Individuals who feel "molto male" are more than twice as likely (+132.6%) 
+# to be in the tumor group compared to the non-tumor group with the same level of psychological distress.
+```
+
+Overall interpretation:
+As psychological well-being decreases from "bene" to "molto male", 
+the relative risk of being in the tumor group increases significantly.
+This trend supports a potential association between poor mental health and tumor incidence.
+
+```{r}
+# ODDS RATIO
+# Here we compute the odds of being in the tumor group for each psychological health level 
+# compared to all the other levels combined.
+
+# OR for the "bene" group vs all other psychological levels
+OR_bene1= prob_condizionata_2[1,1]* (prob_condizionata_2[2,2]+ prob_condizionata_2[2,3] + prob_condizionata_2[2,4])
+OR_bene2 = prob_condizionata_2 [2,1] * (prob_condizionata_2[1,2]+ prob_condizionata_2[1,3] + prob_condizionata_2[1,4])
+OR_1 = OR_bene1/OR_bene2 # 0.4288
+# People who feel "bene" have 57.1% lower odds of being in the tumor group compared to 
+# those in all other psychological conditions combined.
+
+# OR for the "abbastanza bene" group vs the rest
+OR_abb_bene1= prob_condizionata_2[1,2]* (prob_condizionata_2[2,1]+ prob_condizionata_2[2,3] + prob_condizionata_2[2,4])
+OR_abb_bene2 = prob_condizionata_2 [2,2] * (prob_condizionata_2[1,1]+ prob_condizionata_2[1,3] + prob_condizionata_2[1,4])
+OR_2 = OR_abb_bene1/OR_abb_bene2 # 1.5644
+# Individuals reporting "abbastanza bene" have 56.4% higher odds of being in the tumor group 
+# compared to the rest of the population.
+
+# OR for the "male" group vs the rest
+OR_male1= prob_condizionata_2[1,3]* (prob_condizionata_2[2,1]+ prob_condizionata_2[2,2] + prob_condizionata_2[2,4])
+OR_male2 = prob_condizionata_2 [2,3] * (prob_condizionata_2[1,1]+ prob_condizionata_2[1,2] + prob_condizionata_2[1,4])
+OR_3 = OR_male1/OR_male2 # 2.0997
+# Those who feel "male" have more than double the odds (+109.9%) of being in the tumor group 
+# compared to those with other psychological conditions.
+
+# OR for the "molto male" group vs the rest
+OR_mm1= prob_condizionata_2[1,4]* (prob_condizionata_2[2,1]+ prob_condizionata_2[2,2] + prob_condizionata_2[2,3])
+OR_mm2 = prob_condizionata_2 [2,4] * (prob_condizionata_2[1,1]+ prob_condizionata_2[1,2] + prob_condizionata_2[1,3])
+OR_4 = OR_mm1/OR_mm2 # 2.4902
+# Individuals in the "molto male" group have nearly 2.5 times the odds (+149%) of being 
+# in the tumor group compared to those in the other psychological categories
+```
+
+Final summary:
+There is a clear increasing trend in the odds of being in the tumor group 
+as self-reported psychological health worsens. This supports a possible association 
+between poor mental health and higher tumor prevalence.
+
+```{r}
+ps1 <- ps
+ps1 <-subset(ps1, s05_alcool_gg!="-99") # Remove observations with missing values (-99) in 's05_alcool_gg'
+ps1 <-subset(ps1, s12_poco_inter_gg!="-99") # Remove observations with missing values (-99) in 's12_poco_inter_gg'
+skimr::skim(ps1)
+
+
+ps1$data_intervista = as.numeric(ps1$data_intervista) # Convert 'data_intervista' to numeric (e.g. date of interview)
+ps1$count.1 = as.factor(ps1$count.1) # Convert 'count.1' to a factor (categorical variable)
+
+# Convert 'id' and 's07_eta' (age) to integers
+ps1$id <- as.integer(ps1$id)
+ps1$s07_eta <- as.integer(ps1$s07_eta)
+```
+
+## Balancing the dataset
+
+```{r}
+# Apply the ROSE algorithm to balance the dataset for the target variable 's01_tumori'
+# using several predictors (e.g. gender, smoking, age, region, etc.)
+data_balanced2 <- ROSE(s01_tumori ~ sesso_intervistato + s03_fumo + s07_eta + regione +
+                         s14_codifica_mansione +
+                         s14_stato_civ + peso +
+                         s04_consu_frutta + s14_cittadin + s14_tit_stud + s12_poco_inter_gg +
+                         s01_salute_psic + chronic +s14_disp_econ,
+                       data = ps1, seed = 123)$data
+
+
+# Add synthetic IDs to each row for traceability
+data_balanced2$id <- paste0("synt_", seq_len(nrow(data_balanced2)))
+data_balanced2 <- data_balanced2 %>%
+  dplyr::select(id, everything())
+
+# Cap and round continuous variables to stay within valid ranges
+data_balanced2$s01_salute_psic <- round(pmin(pmax(data_balanced2$s01_salute_psic, 0), 30))
+data_balanced2$s12_poco_inter_gg <- round(pmin(pmax(data_balanced2$s12_poco_inter_gg, 0), 14))
+data_balanced2$s07_eta <- round(pmin(pmax(data_balanced2$s07_eta, 18), 69))
+
+# Create categorical levels for psychological health for further analysis
+data_balanced2$s01_salute_psic1 <- cut(
+  data_balanced2$s01_salute_psic,
+  breaks = c(-1,0, 9, 19, 30),
+  labels = c("bene", "abb bene", "male", "molto male"),
+  right = TRUE,
+  ordered_result = TRUE
+)
+
+str(data_balanced2)
+
+table(data_balanced2$sesso_intervistato) # Frequency table for gender
+table(data_balanced2$s01_tumori) # Frequency table for the target variable (tumor)
+
+skimr::skim(data_balanced2)
+```
+
+**Models**
+
+After rebalancing the dataset with ROSE, we go into depth with the analysis of some statistical models, in order to primarily understand how the variable tumor is influenced by the other variables.
+
+The first model we are going to see is the logistic regression, which is a statistical model that works as a binary classifier, both used in descriptive and predictive analysis. The model estimates the lod-odds of the dependent variable as a linear combination of the covariates. The log-odds are then mapped into probabilities through the logistic function, which is enclosed in the interval (0,1). After the mapping, each observation has an assigned probability that assess the probability of belonging to a certain class.
+
+```{r}
+ps1_log_reg_balanced_rose <- glm(s01_tumori ~ I(s07_eta)^2 : s14_codifica_mansione +
+                                   sesso_intervistato + s03_fumo + s14_stato_civ + peso + s04_consu_frutta + s14_cittadin + s14_tit_stud + regione
+                                 + s12_poco_inter_gg +
+                                   s01_salute_psic + s14_disp_econ + chronic,
+                                 data= data_balanced2, family='binomial')
+summary(ps1_log_reg_balanced_rose)
+summ(ps1_log_reg_balanced_rose, model.info =  F)
+```
+
+Running the logistic regression, many input variables seem to be significant for the analysis, meaning that there's an association with the presence of tumor. In particular, gender, smoke, region, and the interaction between age and job seem to have a powerful impact. For example, gender MALE, with respect to FEMALE is negative and strongly significant, meaning that the risk of tumor is decreasing for males with respect to females.
+
+I(s07_eta)^2 has been chosen in order to model the relationship between the covariate and the dependent variable in a way which is not linear, but also depends on the level of age.
+
+The interaction I(s07_eta)^2 : s14_codifica_mansione has been used to see how the combination of the two variables work. Age doesn't have the same effect for each type of job.
+
+We can also reasonably say that the model offers a good explanation of the response variable, as the null deviance is pretty higher than the residual deviance (thus, meaning that the model with covariates better explains the relationship with respect to the null model).
+
+
+```{r}
+ps1_log_reg_balanced_rose2 <- glm(chronic ~ I(s07_eta)^2 : s14_codifica_mansione +
+                                   sesso_intervistato + s03_fumo + s14_stato_civ + peso +
+                                   s04_consu_frutta + s14_cittadin + s14_tit_stud + regione
+                                 + s12_poco_inter_gg +
+                                   s01_salute_psic + s14_disp_econ + s01_tumori,
+                                 data= data_balanced2, family='binomial')
+summary(ps1_log_reg_balanced_rose2)
+summ(ps1_log_reg_balanced_rose2, model.info =  F)
+```
+
+Also in this case, many covariates seem to be likely to influence the 'chronic' variable.
+
+**Building an automated risk indicator**
+
+Going back to the first model, we want to see how an individual is at risk based on its characteristics. We are going to try for it by using the balanced dataset, thus inserting the synthetic ids.
+
+At first, we have to calculate the predicted probabilities of tumors.
+
+```{r}
+data_balanced2$risk_prob <- predict(ps1_log_reg_balanced_rose, type = "response")
+```
+
+Now, we can make a search by id in the dataset, in order to see how high is the probability for a certain individual to have a tumor.
+
+```{r}
+data_balanced2[data_balanced2$id == "synt_1" , c("id", "risk_prob")]
+
+data_balanced2 %>% 
+  filter(id == "synt_1")
+```
+In the first (randomic) example, individual synt_1 has a probability risk of 0.74. Focusing on its characteristics, we can see that, for example, he has experimented 11 days of bad psychological health, he has smoked in his life and that he's 62 years old.
+
+We can also try to apply the prediction to the original dataset to see if it is coherent with our explanation.
+
+```{r, echo = FALSE}
+ps1$risk_prob <- predict(ps1_log_reg_balanced_rose, newdata = ps1, type = "response")
+
+ps1[ps1$id == 4365891 , c("id", "risk_prob")]
+
+ps1 %>%
+  filter(id == 4365891)
+```
+
+In this case, id 4365891 has a probability of 0.54, associated to a high quantity of alcool drank in the last 30 days (20 out of 30) and 61 years old.
+
+We can have a glance at the indicator and see whether, for different thresholds, it is a good classifier based on the real labeled variable for tumors.
+
+```{r, echo = FALSE}
+roc_obj <- roc(response = ps1$s01_tumori, predictor = ps1$risk_prob)
+
+auc(roc_obj)
+
+plot(roc_obj, col = "#1c61b6", lwd = 2, main = "Curva ROC")
+abline(a = 0, b = 1, lty = 2, col = "gray") # linea del caso casuale
+```
+
+The ROC curve lies above the line of the random classifier, thus appearing to be highly performing in terms of classification, on the original model (which was highly unbalanced) with an AUC = 0.7604.
+
+**Comparison with the null model**
+
+```{r}
+null_1 <- glm(s01_tumori ~ 1, data= data_balanced2, family='binomial')
+
+summary(null_1)
+
+anova(null_1, ps1_log_reg_balanced_rose )
+```
+
+Anova is a test that compare two nested model, in which the first one is the simpler one and the second one is the more complex one, by comparing their deviance: if its reduction is significant, then the added variables improve the model. Null hypothesis is: all the added coefficient are = 0.
+
+Based on the Anova test, p-value is below 0.05, thus we can reject the null hypothesis and assess that the full model is statistically better in explaining the data.
+
+
+```{r}
+print(pseudo_R2 <- 1 - deviance(ps1_log_reg_balanced_rose) / deviance(null_1)) 
+```
+
+This element shows that the model explains around 15.9% of deviance with respect to the null model, which can be considered moderately good.
+
+
+Now, are going to see whether similar results can be achieved using the chronic + tumor variable as response.
+We need to create a new binary variable, that assumes value = 1 if there's an illness, 0 otherwise: 
+
+```{r}
+
+ps1$chronic_tumor <- apply(ps1[,c("s01_tumori", "chronic")], 1, function(x) length(which(x=="sì")))
+ps1$chronic_tumor_cat <- ifelse(ps1$chronic_tumor=="0", 0, 1)
+ps1$chronic_tumor_cat <- factor(ps1$chronic_tumor_cat , labels = c("no", "sì"))
+
+```
+Again, we need to rebalance the dataset based on the new variable:
+
+```{r}
+data_balanced_chronic_tumor <- ROSE(chronic_tumor_cat ~ sesso_intervistato + s03_fumo + s07_eta + regione +
+                                      s14_codifica_mansione +
+                                      s14_stato_civ + peso +
+                                      s04_consu_frutta + s14_cittadin + s14_tit_stud + s12_poco_inter_gg +
+                                      s01_salute_psic + s14_disp_econ,
+                                    data = ps1, seed = 123)$data
+
+# id
+data_balanced_chronic_tumor$id <- paste0("synt_ct_", seq_len(nrow(data_balanced_chronic_tumor)))
+data_balanced_chronic_tumor <- data_balanced_chronic_tumor %>%
+  dplyr::select(id, everything())
+
+# continuous variables
+data_balanced_chronic_tumor$s01_salute_psic <- round(pmin(pmax(data_balanced_chronic_tumor$s01_salute_psic, 0), 30))
+data_balanced_chronic_tumor$s12_poco_inter_gg <- round(pmin(pmax(data_balanced_chronic_tumor$s12_poco_inter_gg, 0), 14))
+data_balanced_chronic_tumor$s07_eta <- round(pmin(pmax(data_balanced_chronic_tumor$s07_eta, 18), 69))
+
+# adding levels for psychological health
+data_balanced_chronic_tumor$s01_salute_psic1 <- cut(
+  data_balanced_chronic_tumor$s01_salute_psic,
+  breaks = c(-1, 0, 9, 19, 30),
+  labels = c("bene", "abb bene", "male", "molto male"),
+  right = TRUE,
+  ordered_result = TRUE
+)
+str(data_balanced_chronic_tumor)
+
+table(data_balanced_chronic_tumor$sesso_intervistato)
+table(data_balanced_chronic_tumor$chronic_tumor_cat)
+
+skimr:: skim(data_balanced_chronic_tumor)
+```
+
+Let's try again for the logistic regression, with the new dataset:
+
+```{r}
+ps1_log_reg_balanced_rose_tum_chro <- glm(chronic_tumor_cat ~ I(s07_eta)^2 : s14_codifica_mansione +
+                                            sesso_intervistato + s03_fumo + s14_stato_civ + peso +
+                                            s04_consu_frutta + s14_cittadin + s14_tit_stud + regione
+                                          + s12_poco_inter_gg +
+                                            s01_salute_psic + s14_disp_econ,
+                                          data= data_balanced_chronic_tumor, family='binomial')
+summary(ps1_log_reg_balanced_rose_tum_chro)
+summ(ps1_log_reg_balanced_rose_tum_chro, model.info =  F)
+```
+
+As expected, many coefficients are significant; moreover, the residual deviance seems to be considerably lower than the null deviance.
+
+**Poisson regression**
+
+Poisson regression is a statistical model used to predict count data — that is, data that represents the number of times an event occurs. In this case, the event is the presence of tumors, and we are going to analyze it with respect to age and psychological health.
+
+Here, coefficients represent log changes in the expected counts: an increase of 1 in age leads to an increase of exp(coef) in y.
+
+At first, we need to build the dataset to use:
+```{r}
+ps_llm1 <-  data_balanced2 %>% filter(s01_tumori=='sì') %>%
+  group_by(s01_salute_psic1, s07_eta, s01_tumori) %>%
+  summarize(n=n())
+
+
+ps_llm2 <-  data_balanced2 %>%
+  group_by(s01_salute_psic1, s07_eta) %>%
+  summarize(tot=n())
+
+
+ps_llm <- merge(ps_llm1, ps_llm2, by=c("s07_eta", "s01_salute_psic1"))
+
+```
+
+Psychological health, in our case is set to be ordered (we'are going to use it later on), but in this case we want to see how each level influences the response variable, thus we are going to temporairly treat it as unordered.
+
+```{r}
+ps_llm$s01_salute_psic1 <- factor(ps_llm$s01_salute_psic1, ordered = FALSE)
+
+```
+
+Poisson regression with offset:
+
+```{r}
+m_llm <- glm(n ~ I(s07_eta)^2 + s01_salute_psic1, offset=log(tot), 
+             family = poisson, data = ps_llm)
+
+summary(m_llm)
+```
+
+Poisson regression without offset:
+
+```{r}
+m_llm_nooffset <- glm(n ~ I(s07_eta)^2 + s01_salute_psic1, 
+                      family = poisson, data = ps_llm)
+
+summary(m_llm_nooffset)
+```
+
+Offset makes it possible to model rates instead of raw counts. In the first case, we are looking at the count of individuals with tumor or not divided by the total population.
+
+We can compare the two models, in which the covariates are statistically significant, by using AIC:
+
+```{r}
+AIC(m_llm)
+AIC(m_llm_nooffset)
+```
+
+For the first model (with the offset), as expected, AIC is significantly lower than the second one, suggesting that it balances better model fit with complexity.
+
+However, looking at the plots we can see that they are both quite explanatory. The plot including the offset seems to be more linear in the relationship between age and count of tumors.
+
+```{r, echo = FALSE}
+prova_grafico = ps1 %>% group_by(s07_eta) %>% summarise (n = sum(s01_tumori == "sì"),
+                                                         tot = n())
+# 1
+plot(prova_grafico$s07_eta ,prova_grafico$n,
+     xlab = "età", 
+     ylab= "conteggio tumori a sì")
+
+# 2
+plot(prova_grafico$s07_eta, prova_grafico$n / prova_grafico$tot,
+     xlab = "eta", 
+     ylab= "Number di tumori / number di persone") 
+```
+
+We can also try for an interaction model between age and psychological health, in order to see whether age has a different impact for different levels of psychological health:
+
+```{r}
+m2_llm <- glm(n ~ I(s07_eta)^2 * s01_salute_psic1, offset=log(tot), 
+              family = poisson, data = ps_llm)
+
+anova(m_llm, m2_llm, test= 'LRT')
+```
+
+Interaction seems to be significant.
+
+Now, we have to check for overdispersion, as in the case of Poisson regression one assumption is that the mean and the variance are equal. By the way, in reality variance is often greater or lower than the mean.
+
+```{r}
+dispersiontest(m_llm, trafo=1, alternative = "two.sided") #0.6902293 
+
+
+dp <- sum(residuals(m_llm,type ="pearson")^2)/m_llm$df.residual
+dp
+```
+
+In this case, the dispersion test assess that there's a form of underdispersion (alpha < 1), which is significant. On the other hand, the dispersion parameter assumes a value of 1.755717, suggesting overdispersion.
+
+These two indicators should be analyzed together.
+
+```{r}
+res_pearson <- residuals(m_llm, type = "pearson")
+
+hist(res_pearson, main = "Histogram of Pearson Residuals", xlab = "Residuals", col = "lightblue", breaks = 30)
+
+plot(fitted(m_llm), res_pearson,
+     xlab = "Fitted values",
+     ylab = "Pearson residuals",
+     main = "Pearson Residuals vs Fitted Values")
+abline(h = 0, col = "red", lty = 2)
+```
+
+Looking at Pearson Residuals, it seems that there's no clear pattern, and the majority of them is distributed around 0. This suggests that the model may be quite good.
+
+We can try for a quasi-poisson model, in order to see if it performs better. The quasi-Poisson model is an extension of the standard Poisson regression used for count data.
+
+This alternative allows the variance to differ from the mean by estimating a dispersion parameter directly from the data, making it more flexible and realistic. While the coefficient estimates remain the same, the quasi-Poisson model adjusts the standard errors and significance tests, providing more reliable inference under dispersion:
+
+```{r}
+m3_llm_qs <- glm(n ~ I(s07_eta)^2 * s01_salute_psic1, offset=log(tot), 
+              family = quasipoisson, data = ps_llm)
+
+summary(m3_llm_qs)
+```
+
+The main difference in the two models is that the Dispersion Parameter is 1.316823 for the quasi-poisson, compared to 1 for the poisson: the quasi-poisson model is more "realistic" than the simple one, but in conclusion we can say that there's not a great difference between these two models.
+
+**Generalized Linear Mixed Model**
+
+GLMM are models that include both fixed (repeatable) and random (group-level variations) effects in GLM.
+
+```{r}
+m_disease <- lme4::glmer(s01_tumori ~ (1 | regione:s07_eta) +
+                           factor(s01_salute_psic1,ordered = FALSE),
+                         family = binomial, data = data_balanced2)
+
+
+summary(m_disease)
+
+summ(m_disease, model.info = F, model.fit = F,confint = T)
+
+
+parameters::random_parameters(m_disease)
+
+```
+
+In our case, the fixed effect is given by psychological health and the random effect by a combination of age and region.
+
+In the summary we can see that the p-value for the fixed effect is low (thus, coefficients are significant).
+
+ICC is an indicator of the percentage of total variance explained by the random effect. in this case there's a portion of variance of 0.22 which is explained by the group (region * age).
+
+We can draw a forest plot (or odds ratio plot), to visualize the odds ratio of the predictor:
+
+```{r, echo = FALSE}
+sjPlot::plot_model(m_disease, show.values = TRUE, show.p=TRUE)
+
+```
+
+The red dots represent the estimated odds ratio for specific levels (with respect to the reference level, which is "bene") of psychological health. All effects are significant: for example, looking at the level "Molto Male" the OR = 3.43 which means that people with very bad (perceived) psychological health have 3.43 times higher odds of having tumors.
+
+```{r, echo = FALSE}
+random_effects = head(sjPlot::get_model_data(m_disease, type = c("re")))
+random_effects
+```
+
+This command extracts the random effects from the GLMM above. Here, the estimate and the confidence levels makes us understand whether a certain random effect is significative or not, and in which direction; for example, looking at line 1: the given coefficient is positive, thus the term has a higher impact on the variable with respect to the mean; moreover, the confidence interval is below 1 (doesn't include 1), therefore meaning that the effect is significant.
+
+We can also model separately age and region:
+
+```{r}
+
+m_disease2 <- lme4::glmer(s01_tumori ~ (1|regione) + (1|s07_eta)
+                          +(1|regione:s07_eta) + 
+                            factor(s01_salute_psic1, ordered = F), 
+                          family=binomial, data = data_balanced2)
+
+summ(m_disease2) 
+anova(m_disease, m_disease2, type="LRT") 
+
+sjPlot::plot_model(m_disease2, type = c("re"), dot.size = 0.8, line.size = 0.1) 
+
+```
+
+The plot displays the estimated random effects by region from the GLMM. Regions with positive random effects (e.g., [insert region]) show a higher-than-average tendency for the outcome variable, while those with negative effects (e.g., [insert region]) show a lower-than-average tendency. Confidence intervals that do not cross zero indicate statistically significant deviations from the overall mean. It's interesting to see that some regions, for example Calabria and Abruzzo are negatively and significantly related to tumor. This may be due to the case that there are fewer data about this regions:
+
+```{r}
+sum(ps1$regione == "Friuli Venezia Giulia")
+sum(ps1$regione == "Calabria")
+
+```
+
+In general, considering the ICC (0.24 for the new model), the interaction is better to explain the variability in the data, moreover the ANOVA test suggests that the second model is better than the first one in terms of explanation of the data.
+
+Another try: interaction between age and wealth (s14_disp_econ):
+
+```{r}
+m_disease_disp <- lme4::glmer(s01_tumori ~ (1 | s14_disp_econ:s07_eta) +
+                           factor(s01_salute_psic1,ordered = FALSE),
+                         family = binomial, data = data_balanced2)
+
+
+summary(m_disease_disp)
+
+summ(m_disease_disp, model.info = F, model.fit = F,confint = T)
+
+
+parameters::random_parameters(m_disease_disp)
+sjPlot::plot_model(m_disease_disp, show.values = TRUE, show.p=TRUE)
+head(sjPlot::get_model_data(m_disease_disp, type = c("re")))
+sjPlot::plot_model(m_disease_disp, type = c("re"), dot.size = 0.8, line.size = 0.1)
+```
+The interaction forest plot suggests that age, combined with wealth, is not strictly constant. There's a logarithmic pattern in this data, and variability is pretty higher for higher levels of age.
+
+We can also model separately age and wealth:
+
+```{r}
+m_disease_disp2 <- lme4::glmer(s01_tumori ~ (1|s14_disp_econ) + (1|s07_eta)
+                          +(1|s14_disp_econ:s07_eta) + 
+                            factor(s01_salute_psic1, ordered = F), 
+                          family=binomial, data = data_balanced2)
+
+summ(m_disease_disp2) 
+
+anova(m_disease_disp, m_disease_disp2, type="LRT") 
+
+```
+
+We can also plot the forest plot for the random effects:
+
+```{r, echo = FALSE}
+sjPlot::plot_model(m_disease_disp2, type = c("re"), dot.size = 0.8, line.size = 0.1) 
+
+```
+
+It is clear that, looking at variable age, there's an increase in positive and significant effects, with respect to the mean. On the other hand, wealth seems to be less significant (estimates close to 1).
+
+**Psychological health as response variable**
+
+Now, we want to investigate the reverse problem: is psychological health related to which variable?
+
+The aim is to fit an ordinal regression to predict psychological health (s01_salute_psic1) based on tumor status and economic availability; this model estimates the cumulative probability that an observation belongs to a category which is less / equal to k.
+
+```{r}
+m_psic <- vglm(s01_salute_psic1 ~ s01_tumori + s14_disp_econ,
+            family = cumulative(parallel = TRUE),
+            data = data_balanced2)
+
+summary(m_psic)
+```
+
+The intercepts indicate the thresholds between one category and the next one.
+
+About predictors, a positive coefficient indicates that, as the covariate increases, the probability of being in higher (worse) outcome categories increases.
+A negative coefficient indicates that higher values of the covariate are associated with a greater probability of being in lower (better) categories.
+
+In this case, for example, looking at the variable tumors (with "no" as the reference level), we see that its associated coefficient is -0.66. This means that having a tumor is associated with a higher probability of reporting worse psychological health (i.e., being in higher categories of the outcome variable).
+
+Individuals with tumors and those experiencing greater economic difficulties are significantly more likely to report worse psychological health. The effect is strongest for those with many financial difficulties. The model assumes proportional odds and shows statistically robust results.
+
+```{r, echo = FALSE}
+# Crea una griglia di valori per le variabili predittive
+new_data_ordered <- expand.grid(
+  s01_tumori = c("no", "sì"),
+  s14_disp_econ = c("molto facilmente", "abbastanza facilmente", "qualche diff", "molte diff")
+)
+
+# Aggiungi le predizioni dal modello
+pred <- predict(m_psic, newdata = new_data_ordered, type = "response")
+
+# Aggiungi le probabilità predette al dataset
+pred_df <- cbind(new_data_ordered, pred)
+colnames(pred_df)[3:ncol(pred_df)] <- paste0("P(Y=", 1:(ncol(pred_df)-2), ")")
+
+# Riorganizza i dati per ggplot
+pred_long <- pred_df %>%
+  pivot_longer(cols = starts_with("P(Y="), names_to = "Categoria", values_to = "Probabilità")
+
+
+# Mappa delle etichette leggibili
+label_map <- c(
+  "P(Y=1)" = "P(Bene)",
+  "P(Y=2)" = "P(Abb bene)",
+  "P(Y=3)" = "P(Male)",
+  "P(Y=4)" = "P(Molto male)"
+)
+
+# Aggiungi una colonna con le etichette leggibili
+pred_long <- pred_long %>%
+  mutate(Categoria_label = label_map[Categoria])
+
+# Imposta l'ordine desiderato per le categorie di salute
+pred_long$Categoria_label <- factor(
+  pred_long$Categoria_label,
+  levels = c("P(Bene)", "P(Abb bene)", "P(Male)", "P(Molto male)"),
+  ordered = TRUE
+)
+
+# Grafico categorie
+
+ggplot(pred_long, aes(x = s14_disp_econ, y = Probabilità, fill = Categoria_label)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ s01_tumori) +
+  labs(title = "Probabilità predette per categoria di salute psicologica",
+       x = "Disponibilità economica",
+       y = "Probabilità",
+       fill = "Categoria di salute") +
+  scale_fill_manual(
+    values = c(
+      "P(Bene)" = "#1b9e77",
+      "P(Abb bene)" = "#7570b3",
+      "P(Male)" = "#e6ab02",
+      "P(Molto male)" = "#d95f02"
+    )
+  ) +
+  theme_minimal()
+
+
+# Grafico delle probabilità cumulative (opzionale)
+cum_probs <- t(apply(pred, 1, cumsum))
+cum_df <- cbind(new_data_ordered, cum_probs)
+colnames(cum_df)[3:ncol(cum_df)] <- paste0("P(Y≥", 1:(ncol(cum_df)-2), ")")
+
+
+
+# Riorganizza i dati cumulativi per ggplot
+cum_long <- cum_df %>%
+  pivot_longer(
+    cols = starts_with("P(Y≥"),
+    names_to = "Cumulativa",
+    values_to = "Probabilità"
+  )
+
+# Mappa delle etichette cumulative leggibili
+cum_label_map <- c(
+  "P(Y≥1)" = "P(≥ Bene)",
+  "P(Y≥2)" = "P(≥ Abb bene)",
+  "P(Y≥3)" = "P(≥ Male)",
+  "P(Y≥4)" = "P(≥ Molto male)"
+)
+
+# Applica le etichette leggibili
+cum_long <- cum_long %>%
+  mutate(Cumulativa_label = cum_label_map[Cumulativa])
+
+# Imposta l'ordine desiderato per le categorie di salute
+cum_long$Cumulativa_label <- factor(
+  cum_long$Cumulativa_label,
+  levels = c("P(≥ Bene)", "P(≥ Abb bene)", "P(≥ Male)", "P(≥ Molto male)"),
+  ordered = TRUE
+)
+
+# Grafico prob cumulative
+ggplot(cum_long, aes(x = s14_disp_econ, y = Probabilità, color = Cumulativa_label, group = Cumulativa_label)) +
+  geom_line(size = 1.2) +
+  facet_wrap(~ s01_tumori) +
+  labs(title = "Probabilità cumulative predette",
+       x = "Disponibilità economica",
+       y = "Probabilità cumulativa",
+       color = "Categoria cumulativa") +
+  scale_color_manual(
+    values = c(
+      "P(≥ Bene)" = "#1b9e77",
+      "P(≥ Abb bene)" = "#7570b3",
+      "P(≥ Male)" = "#e6ab02",
+      "P(≥ Molto male)" = "#d95f02"
+    )
+  ) +
+  theme_minimal()
+
+```
+
+The first plot shows the predicted probabilities of each psychological health category for different levels of economic availability, separated by tumor status. Predicted probability of being good decreases as wealth decreases; moreover, for the same level of wealth, people with tumor tend to a worse psychological health condition. The second plot, instead, shows the cumulative probabilities (e.g., probability of being in a category at least as bad as a given level) across economic conditions, again separated by tumor status. 
+
+In the "no" panel (no tumors), the curves are more spread out and less steep, indicating a more gradual transition between psychological health categories.
+In the "yes" panel (with tumors), the curves are closer together, suggesting that even small changes in economic availability are associated with large shifts in the probability of psychological distress.
+
+Comparison with the null model:
+
+```{r}
+m_psic_null <- vglm(s01_salute_psic1 ~ 1,
+               family = cumulative(parallel = TRUE),
+               data = data_balanced2)
+
+pchisq(deviance(m_psic_null)-deviance(m_psic),
+       df=df.residual(m_psic_null)-df.residual(m_psic), lower.tail=FALSE)
+```
+
+Based on the Likelihood Ratio Test, it's clear that the complex model is better than the null one.
+
+Now we are going to add citizenship as third variable:
+
+```{r}
+m_psic2 <- vglm(s01_salute_psic1 ~ s01_tumori + s14_cittadin + s14_disp_econ,
+               family = cumulative(parallel = TRUE),
+               data = data_balanced2)
+summary(m_psic2)
+
+pchisq(deviance(m_psic)-deviance(m_psic2),
+       df=df.residual(m_psic)-df.residual(m_psic2), lower.tail=FALSE)
+```
+
+Also for this case, the model with the added variable seems more descriptive than the simpler one.
+
+# Conclusion
+
+The results of our analyses indicate that the applied models are statistically significant and support the existence of a bidirectional association between mental and psychological health; it's also interesting see how perceived well-being is a focal point in this analysis.
+
+These findings underscore the importance of integrated approaches in both the prevention and treatment of oncological diseases, suggesting that psychological well-being should be considered a key component in comprehensive healthcare strategies. Additionally, public health policies should aim to incorporate psychological screening and support as part of routine oncological care, especially for socioeconomically vulnerable populations.
